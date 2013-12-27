@@ -1,0 +1,20 @@
+{
+  "name": "lush-api",
+  "version": "0.0.1",
+  "dependencies": {
+    "async": "*",
+    "cheerio": "*",
+    "node-restify-swagger": "*",
+    "node-restify-validation": "*",
+    "restify": "*",
+    "request": "*"
+  },
+  "engines": {
+    "node": ">=0.10.x",
+    "npm": ">=1.2.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/cvan/lush-api.git"
+  }
+}
