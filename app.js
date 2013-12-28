@@ -1,11 +1,11 @@
 var fs = require('fs');
 var os = require('os');
 var path = require('path');
-var spawn = require('child_process').spawn;
 
 var async = require('async');
 var cheerio = require('cheerio');
 var request = require('request');
+var sanitizeHtml = require('sanitize-html');
 
 var server = require('./server');
 var utils = require('./lib/utils');
@@ -49,7 +49,75 @@ CITIES.mi = [
     'MI/Traverse-City.aspx'
 ];
 
-var listingsDir = path.resolve('static', 'listings');
+const LISTINGS_DIR = path.resolve('static', 'listings');
+
+
+function getText($el) {
+    return $el.text().trim();
+}
+
+
+function extractMetadata(id, body, callback) {
+    var $ = cheerio.load(body);
+
+    // Address
+    var $loc = $('[itemprop=location]');
+    var address = {
+        address: getText($loc.find('[itemprop=streetAddress]')),
+        city: getText($loc.find('[itemprop=addressLocality]')).replace(/,$/g, ''),
+        state: getText($loc.find('[itemprop=addressRegion]')),
+        zip: getText($loc.find('[itemprop=postalCode]'))
+    };
+
+    // Dates
+    $('#SaleDatesWrapper .iconRow_Content br').replaceWith('\n');
+    var dirtyDates = getText($('#SaleDatesWrapper .iconRow_Content')).split('\n');
+    var chunks;
+    dates = {};
+    dirtyDates.forEach(function(v, k) {
+        chunks = v.split(' ');
+        dates[chunks[0]] = {starts: chunks[1], ends: chunks[3]};
+    });
+
+    // Description
+    var description = $('[itemtype$="Event"] [itemprop=description] .ckEditorReset').html() || '';
+    if (description) {
+        description = sanitizeHtml(description.trim());
+    }
+
+    // Images
+    var $images = $('[rel=salePics]');
+    var images = {
+        sold: $images.filter('[data-fancyboxsold]').map(function() {
+            return $(this).attr('href')
+                .replace('http://pictures.EstateSales.NET', '');
+        }),
+        unsold: $images.filter(':not([data-fancyboxsold])').map(function() {
+            return $(this).attr('href')
+                .replace('http://pictures.EstateSales.NET', '');
+        })
+    };
+
+    // Organisation
+    var $org = $('[itemtype$="Organization"]');
+    var organisation = {
+        name: getText($org.find('[itemprop=name]')),
+        telephone: getText($org.find('[itemprop=telephone]')),
+        url: getText($org.find('[itemprop=url]'))
+    };
+
+    var data = {
+        address: address,
+        dates: dates,
+        description: description,
+        id: id,
+        images: images,
+        name: getText($('#SaleName')),
+        organisation: organisation
+    };
+
+    return callback(null, data);
+}
 
 
 function refreshView(req, res) {
@@ -60,15 +128,17 @@ function refreshView(req, res) {
 
     var state = DATA.state.toLowerCase();
 
-    var stateTXT = path.resolve(listingsDir, state + '.txt');
-
-    if (fs.existsSync(stateTXT)) {
-        fs.unlinkSync(stateTXT);
-    }
+    var baseDir = path.resolve(LISTINGS_DIR, state);
+    var stateTXT = path.resolve(LISTINGS_DIR, state + '.txt');
+    var stateJSON = path.resolve(LISTINGS_DIR, state + '.json');
 
     var tasks = [];
+
     var links = [];
     var link = '';
+
+    var listings = [];
+    var listingID;
 
     async.map(CITIES[state], function mapCity(v, callback) {
         // Remove everything in the URI after the "MI/" (i.e., the state).
@@ -79,22 +149,22 @@ function refreshView(req, res) {
 
         slug = utils.slugify(slug).toLowerCase();
 
-        var baseDir = path.resolve(listingsDir, state);
-
         if (!fs.existsSync(baseDir)) {
             console.error('Directory "' + baseDir + '" does not exist');
             utils.mkdirRecursive(baseDir);
         }
 
-        var cityHTML = path.resolve(baseDir, slug + '.html');
-
         request.get(BASE_URL + v, function getResponse(err, response, body) {
             console.log('Processing city:', slug);
+
             if (err || response.statusCode !== 200) {
                 console.error('Could not fetch ' + BASE_URL + v + '\n', err);
                 return callback(err);
             }
+
+            var cityHTML = path.resolve(baseDir, slug + '.html');
             fs.writeFile(cityHTML, body);
+
             var $ = cheerio.load(body);
             $('#MainSaleListWrapper .saleItem .saleLink').map(function() {
                 link = utils.getAbsoluteURI($(this).attr('href'), BASE_ORIGIN);
@@ -102,18 +172,57 @@ function refreshView(req, res) {
                     links.push(link);
                 }
             });
-            callback(null, links);
+
+            callback(null, slug);
         });
     }, function mapCityDone(err, result) {
         if (err) {
-            return console.error('Error:', err);
+            return console.error('Error fetching cities in state:', err);
         }
-        console.log('Done');
-        fs.appendFile(stateTXT, links.sort().join('\n'), function(err) {
+
+        console.log('Done processing all cities in state:', result.length);
+
+        async.map(links, function mapLink(v, callback) {
+            request.get(v, function getResponse(err, response, body) {
+                // Get the number in the URI after the last slash.
+                listingID = parseInt(v.substr(v.lastIndexOf('/') + 1), 10);
+
+                console.log('Processing listing', listingID + ':', v);
+
+                if (err || response.statusCode !== 200) {
+                    console.error('Could not fetch ' + v + '\n', err);
+                    return callback(err);
+                }
+
+                // Get metadata for this listing.
+                var cityHTML = path.resolve(baseDir, listingID + '.html');
+                fs.writeFile(cityHTML, body);
+
+                extractMetadata(listingID, body, function metadata(err, data) {
+                    if (err) {
+                        console.error('Could not extract metadata for',
+                            listingID + ':\n', err);
+                    }
+                    callback(err, data);
+                });
+
+                // TODO: Fetch and save images.
+            });
+        }, function linksDone(err, result) {
             if (err) {
-                console.error(err);
+                return console.error(
+                    'Error saving JSON of listings in state:', err);
             }
+
+            console.log('Done saving JSON of listings in state:', result.length);
+
+            fs.writeFile(stateJSON, JSON.stringify(result), function(err) {
+                if (err) {
+                    console.error(err);
+                }
+            });
         });
+
     });
 
     res.json(202, {success: true});

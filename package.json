@@ -7,7 +7,8 @@
     "node-restify-swagger": "*",
     "node-restify-validation": "*",
     "restify": "*",
-    "request": "*"
+    "request": "*",
+    "sanitize-html": "*"
   },
   "engines": {
     "node": ">=0.10.x",
