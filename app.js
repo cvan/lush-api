@@ -120,6 +120,65 @@ function extractMetadata(id, body, callback) {
 }
 
 
+function mapCity(v, callback) {
+    // Remove everything in the URI after the "MI/" (i.e., the state).
+    var slug = v.split('/')[1];
+    // Remove the extension in the URI (i.e., '.aspx').
+    slug = slug.split('.')[0];
+    // Slugify the city name.
+    slug = utils.slugify(slug).toLowerCase();
+
+    var links = [];
+    var link = '';
+
+    request.get(BASE_URL + v, function getCityResponse(err, response, body) {
+        console.log('Processing city:', slug);
+
+        if (err || response.statusCode !== 200) {
+            console.error('Could not fetch ' + BASE_URL + v + '\n', err);
+            return callback(err);
+        }
+
+        var $ = cheerio.load(body);
+        $('#MainSaleListWrapper .saleItem .saleLink').map(function() {
+            link = utils.getAbsoluteURI($(this).attr('href'), BASE_ORIGIN);
+            if (links.indexOf(link) === -1) {
+                links.push(link);
+            }
+        });
+
+        callback(null, links);
+    });
+}
+
+
+function mapListing(v, callback) {
+    var listingID;
+
+    request.get(v, function getResponse(err, response, body) {
+        // Get the number in the URI after the last slash.
+        listingID = parseInt(v.substr(v.lastIndexOf('/') + 1), 10);
+
+        console.log('Processing listing', listingID + ':', v);
+
+        if (err || response.statusCode !== 200) {
+            console.error('Could not fetch ' + v + '\n', err);
+            return callback(err);
+        }
+
+        extractMetadata(listingID, body, function metadata(err, data) {
+            if (err) {
+                console.error('Could not extract metadata for',
+                    listingID + ':\n', err);
+            }
+            callback(err, data);
+        });
+
+        // TODO: Fetch and save images.
+    });
+}
+
+
 function refreshView(req, res) {
     // Find all listings in a given state.
     var DATA = req.params;
@@ -127,90 +186,41 @@ function refreshView(req, res) {
     console.log(DATA);
 
     var state = DATA.state.toLowerCase();
+    var cities = CITIES[state];
 
-    var baseDir = path.resolve(LISTINGS_DIR, state);
+    if (!cities) {
+        res.json(400, {error: 'Invalid state.'});
+    }
+
+    var baseDir = path.resolve(LISTINGS_DIR);
     var stateJSON = path.resolve(LISTINGS_DIR, state + '.json');
 
-    var tasks = [];
-
-    var links = [];
-    var link = '';
-
-    var listings = [];
-    var listingID;
-
-    async.map(CITIES[state], function mapCity(v, callback) {
-        // Remove everything in the URI after the "MI/" (i.e., the state).
-        var slug = v.split('/')[1];
-
-        // Remove the extension in the URI (i.e., '.aspx').
-        slug = slug.split('.')[0];
-
-        slug = utils.slugify(slug).toLowerCase();
-
-        if (!fs.existsSync(baseDir)) {
-            console.error('Directory "' + baseDir + '" does not exist');
-            utils.mkdirRecursive(baseDir);
-        }
-
-        request.get(BASE_URL + v, function getResponse(err, response, body) {
-            console.log('Processing city:', slug);
-
-            if (err || response.statusCode !== 200) {
-                console.error('Could not fetch ' + BASE_URL + v + '\n', err);
-                return callback(err);
-            }
-
-            var cityHTML = path.resolve(baseDir, slug + '.html');
-            fs.writeFile(cityHTML, body);
-
-            var $ = cheerio.load(body);
-            $('#MainSaleListWrapper .saleItem .saleLink').map(function() {
-                link = utils.getAbsoluteURI($(this).attr('href'), BASE_ORIGIN);
-                if (links.indexOf(link) === -1) {
-                    links.push(link);
-                }
-            });
-
-            callback(null, slug);
-        });
-    }, function mapCityDone(err, result) {
+    async.map(CITIES[state], mapCity, function mapCityDone(err, result) {
         if (err) {
             return console.error('Error fetching cities in state:', err);
         }
 
         console.log('Done processing all cities in state:', result.length);
 
-        async.map(links, function mapLink(v, callback) {
-            request.get(v, function getResponse(err, response, body) {
-                // Get the number in the URI after the last slash.
-                listingID = parseInt(v.substr(v.lastIndexOf('/') + 1), 10);
-
-                console.log('Processing listing', listingID + ':', v);
-
-                if (err || response.statusCode !== 200) {
-                    console.error('Could not fetch ' + v + '\n', err);
-                    return callback(err);
+        // Merge arrays
+        var links = [];
+        result.forEach(function(list) {
+            list.forEach(function(link) {
+                if (links.indexOf(link) === -1) {
+                    links.push(link);
                 }
-
-                // Get metadata for this listing.
-                var cityHTML = path.resolve(baseDir, listingID + '.html');
-                fs.writeFile(cityHTML, body);
-
-                extractMetadata(listingID, body, function metadata(err, data) {
-                    if (err) {
-                        console.error('Could not extract metadata for',
-                            listingID + ':\n', err);
-                    }
-                    callback(err, data);
-                });
-
-                // TODO: Fetch and save images.
             });
-        }, function linksDone(err, result) {
+        });
+
+        async.map(links, mapListing, function linksDone(err, result) {
             if (err) {
                 return console.error(
                     'Error saving JSON of listings in state:', err);
+            }
+
+            if (!fs.existsSync(baseDir)) {
+                console.info('Creating directory: ' + baseDir);
+                utils.mkdirRecursive(baseDir);
             }
 
             console.log('Done saving JSON of listings in state:', result.length);
