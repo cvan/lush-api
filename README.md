@@ -1,6 +1,6 @@
-# lush
+# lush-api
 
-Scrape listings for real estates.
+Scrape listings for estate sales.
 
 
 ## Installation
