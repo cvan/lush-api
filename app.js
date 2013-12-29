@@ -183,6 +183,7 @@ function saveImages(state, listings) {
     var baseDirJSON = path.resolve(LISTINGS_JSON_DIR, state);
     var baseDirIMG = path.resolve(LISTINGS_IMG_DIR, state);
     var imageFN;
+    var imageURI;
 
     // Iterate over each listing.
     listings.forEach(function(listing) {
@@ -193,35 +194,34 @@ function saveImages(state, listings) {
             // Strip leading slash from filename.
             imageFN = path.resolve(LISTINGS_IMG_DIR, state, fn.substr(1));
 
-            fs.exists(imageFN, function(exists) {
-                if (exists) {
-                    console.log('Skipping image (already saved):', fn);
-                    return;
-                }
+            // URI to original image.
+            imageURI = IMG_ORIGIN + fn;
 
-                // Fetch the image.
-                request.get(IMG_ORIGIN + fn, function getImage(err, response, body) {
-                    console.log('Processing image:', fn);
+            if (fs.existsSync(imageFN)) {
+                console.log('Skipping image (already saved):', fn);
+                return;
+            }
 
-                    if (err) {
-                        console.error('Could not fetch image for',
-                            IMG_ORIGIN + fn + '\n', err);
-                    }
+            // Create directories, as needed.
+            utils.mkdirRecursive(path.dirname(imageFN));
 
-                    // Create directories, as needed.
-                    utils.mkdirRecursive(path.dirname(imageFN));
-
-                    // Write image to disk.
-                    fs.writeFile(imageFN, body, function(err) {
-                        if (err) {
-                            console.error('Could not write to disk image ',
-                                IMG_ORIGIN + fn + '\n', err);
-                        }
-                        console.log('Saving image:', imageFN);
-                    });
-                });
-
+            var imgStream = fs.createWriteStream(imageFN);
+            imgStream.on('close', function() {
+                console.log('Saving image:', imageFN);
             });
+
+            request.get(imageURI, function(err) {
+                // Fetch the image.
+                console.log('Processing image:', imageURI);
+
+                if (err) {
+                    console.error('Could not process image', imageURI + '\n', err);
+                }
+            }).pipe(
+                // Write image to disk.
+                imgStream
+            );
+
         });
     });
 }
@@ -231,10 +231,11 @@ function refreshView(req, res) {
     // Find all listings in a given state.
     var DATA = req.params;
     console.log('\n' + new Date(), '[' + req.method + ']', req.url);
-    console.log(DATA);
 
     var state = DATA.state.toLowerCase();
     var cities = CITIES[state];
+
+    console.log('Processing state:', state);
 
     if (!cities) {
         res.json(400, {error: 'Invalid state.'});
