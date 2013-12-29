@@ -12,6 +12,7 @@ var utils = require('./lib/utils');
 
 const BASE_ORIGIN = 'http://www.estatesales.net';
 const BASE_URL = BASE_ORIGIN + '/estate-sales/';
+const IMG_ORIGIN = 'http://pictures.EstateSales.NET';
 
 const CITIES = {};
 CITIES.mi = [
@@ -49,6 +50,9 @@ CITIES.mi = [
 ];
 
 const LISTINGS_DIR = path.resolve('static', 'listings');
+const LISTINGS_JSON_DIR = path.resolve(LISTINGS_DIR, 'json');
+const LISTINGS_IMG_DIR = path.resolve(LISTINGS_DIR, 'img');
+
 
 
 function getText($el) {
@@ -89,12 +93,10 @@ function extractMetadata(id, body, callback) {
     var $images = $('[rel=salePics]');
     var images = {
         sold: $images.filter('[data-fancyboxsold]').map(function() {
-            return $(this).attr('href')
-                .replace('http://pictures.EstateSales.NET', '');
+            return $(this).attr('href').replace(IMG_ORIGIN, '');
         }),
         unsold: $images.filter(':not([data-fancyboxsold])').map(function() {
-            return $(this).attr('href')
-                .replace('http://pictures.EstateSales.NET', '');
+            return $(this).attr('href').replace(IMG_ORIGIN, '');
         })
     };
 
@@ -121,9 +123,9 @@ function extractMetadata(id, body, callback) {
 
 
 function mapCity(v, callback) {
-    // Remove everything in the URI after the "MI/" (i.e., the state).
+    // Remove everything in the URI after the `MI/` (i.e., the state).
     var slug = v.split('/')[1];
-    // Remove the extension in the URI (i.e., '.aspx').
+    // Remove the extension in the URI (i.e., `.aspx`).
     slug = slug.split('.')[0];
     // Slugify the city name.
     slug = utils.slugify(slug).toLowerCase();
@@ -169,12 +171,58 @@ function mapListing(v, callback) {
         extractMetadata(listingID, body, function metadata(err, data) {
             if (err) {
                 console.error('Could not extract metadata for',
-                    listingID + ':\n', err);
+                    listingID + '\n', err);
             }
             callback(err, data);
         });
+    });
+}
 
-        // TODO: Fetch and save images.
+
+function saveImages(state, listings) {
+    var baseDirJSON = path.resolve(LISTINGS_JSON_DIR, state);
+    var baseDirIMG = path.resolve(LISTINGS_IMG_DIR, state);
+    var imageFN;
+
+    // Iterate over each listing.
+    listings.forEach(function(listing) {
+
+        // Iterate over each image filename in the listing.
+        listing.images.unsold.concat(listing.images.sold).forEach(function(fn) {
+
+            // Strip leading slash from filename.
+            imageFN = path.resolve(LISTINGS_IMG_DIR, state, fn.substr(1));
+
+            fs.exists(imageFN, function(exists) {
+                if (exists) {
+                    console.log('Skipping image (already saved):', fn);
+                    return;
+                }
+
+                // Fetch the image.
+                request.get(IMG_ORIGIN + fn, function getImage(err, response, body) {
+                    console.log('Processing image:', fn);
+
+                    if (err) {
+                        console.error('Could not fetch image for',
+                            IMG_ORIGIN + fn + '\n', err);
+                    }
+
+                    // Create directories, as needed.
+                    utils.mkdirRecursive(path.dirname(imageFN));
+
+                    // Write image to disk.
+                    fs.writeFile(imageFN, body, function(err) {
+                        if (err) {
+                            console.error('Could not write to disk image ',
+                                IMG_ORIGIN + fn + '\n', err);
+                        }
+                        console.log('Saving image:', imageFN);
+                    });
+                });
+
+            });
+        });
     });
 }
 
@@ -192,8 +240,7 @@ function refreshView(req, res) {
         res.json(400, {error: 'Invalid state.'});
     }
 
-    var baseDir = path.resolve(LISTINGS_DIR);
-    var stateJSON = path.resolve(LISTINGS_DIR, state + '.json');
+    var stateJSON = path.resolve(LISTINGS_JSON_DIR, state + '.json');
 
     async.map(CITIES[state], mapCity, function mapCityDone(err, result) {
         if (err) {
@@ -202,11 +249,15 @@ function refreshView(req, res) {
 
         console.log('Done processing all cities in state:', result.length);
 
-        // Merge arrays
+        // Merge arrays and create a unique array of all the URIs of all
+        // the listings.
         var links = [];
         result.forEach(function(list) {
             list.forEach(function(link) {
-                if (links.indexOf(link) === -1) {
+                // Add to array if (1) it's not already in the array and
+                // (2) it contains `/{state}/`.
+                if (links.indexOf(link) === -1 &&
+                    '/' + state.toUpperCase() + '/'.indexOf(link) !== -1) {
                     links.push(link);
                 }
             });
@@ -215,21 +266,21 @@ function refreshView(req, res) {
         async.map(links, mapListing, function linksDone(err, result) {
             if (err) {
                 return console.error(
-                    'Error saving JSON of listings in state:', err);
+                    'Error generating JSON of listings in state:', err);
             }
-
-            if (!fs.existsSync(baseDir)) {
-                console.info('Creating directory: ' + baseDir);
-                utils.mkdirRecursive(baseDir);
-            }
-
-            console.log('Done saving JSON of listings in state:', result.length);
 
             fs.writeFile(stateJSON, JSON.stringify(result), function(err) {
                 if (err) {
-                    console.error(err);
+                    return console.error(
+                        'Error saving JSON of listings in state:', err);
                 }
+
+                console.log('Done saving JSON of listings in state:',
+                    result.length);
             });
+
+            // Save images to disk.
+            saveImages(state, result);
         });
 
     });
@@ -253,5 +304,6 @@ server.get(refreshEndpoint, refreshView);
 
 
 server.listen(process.env.PORT || 5000, function() {
+    utils.mkdirRecursive(LISTINGS_JSON_DIR);
     console.log('%s listening at %s', server.name, server.url);
 });
