@@ -1,5 +1,4 @@
 var fs = require('fs');
-var os = require('os');
 var path = require('path');
 
 var async = require('async');
@@ -72,17 +71,18 @@ function extractMetadata(id, body, callback) {
     // Dates
     $('#SaleDatesWrapper .iconRow_Content br').replaceWith('\n');
     var dirtyDates = getText($('#SaleDatesWrapper .iconRow_Content')).split('\n');
+    var dates = {};
     var chunks;
-    dates = {};
-    dirtyDates.forEach(function(v, k) {
+    dirtyDates.forEach(function(v) {
         chunks = v.split(' ');
         dates[chunks[0]] = {starts: chunks[1], ends: chunks[3]};
     });
 
     // Description
-    var description = $('[itemtype$="Event"] [itemprop=description] .ckEditorReset').html() || '';
-    if (description) {
-        description = sanitizeHtml(description.trim());
+    var $descr = $('[itemtype$="Event"] [itemprop=description] .ckEditorReset');
+    var description = null;
+    if ($descr.length) {
+        description = sanitizeHtml(($descr.html() || '').trim());
     }
 
     // Images
@@ -129,7 +129,6 @@ function refreshView(req, res) {
     var state = DATA.state.toLowerCase();
 
     var baseDir = path.resolve(LISTINGS_DIR, state);
-    var stateTXT = path.resolve(LISTINGS_DIR, state + '.txt');
     var stateJSON = path.resolve(LISTINGS_DIR, state + '.json');
 
     var tasks = [];
